@@ -1,0 +1,73 @@
+function appendNewBlueskyNamesToStudentDatabase() {
+  const ss = SpreadsheetApp.getActive();
+
+  const SRC_SHEET = "blueskyRoster";     // column A: "Bluesky Roster"
+  const SRC_COL = 1;
+
+  const DST_SHEET = "studentDatabase";   // column A: "Name"
+  const DST_COL = 1;
+
+  const src = ss.getSheetByName(SRC_SHEET);
+  const dst = ss.getSheetByName(DST_SHEET);
+  if (!src || !dst) throw new Error("Missing required sheets (blueskyRoster or studentDatabase).");
+
+  // --- Read source names (skip header) ---
+  const srcLast = src.getLastRow();
+  const srcNames = srcLast > 1
+    ? src.getRange(2, SRC_COL, srcLast - 1, 1).getValues().map(r => asName(r[0]))
+    : [];
+
+  // --- Read current destination names (skip header) ---
+  const dstLast = dst.getLastRow();
+  const dstNames = dstLast > 1
+    ? dst.getRange(2, DST_COL, dstLast - 1, 1).getValues().map(r => asName(r[0]))
+    : [];
+
+  // Build a normalized set of existing names to prevent duplicates
+  const existing = new Set();
+  for (const n of dstNames) {
+    if (!n) continue;
+    existing.add(normalizeName(n)); // normalization ignores case/parentheticals/extra spaces
+  }
+
+  // Collect additions (preserve original formatting)
+  const additions = [];
+  for (const n of srcNames) {
+    if (!n) continue;
+    const norm = normalizeName(n);
+    if (!norm) continue;
+    if (!existing.has(norm)) {
+      additions.push([n]);   // keep original formatting
+      existing.add(norm);    // prevent duplicates within this run
+    }
+  }
+
+  // Append under the last existing name (do NOT clear anything)
+  if (additions.length > 0) {
+    const startRow = dstLast >= 2 ? dstLast + 1 : 2; // if only header, start at row 2
+    dst.getRange(startRow, DST_COL, additions.length, 1).setValues(additions);
+  }
+}
+
+// ---- Helpers ----
+
+function asName(val) {
+  return (val == null ? "" : String(val)).trim();
+}
+
+/**
+ * Normalizes a name for duplicate checking:
+ *  - removes any parentheticals: "Jane Doe (JD)" -> "Jane Doe"
+ *  - collapses multiple spaces
+ *  - trims
+ *  - lowercases
+ */
+function normalizeName(s) {
+  if (!s) return "";
+  let t = s.replace(/\([^)]*\)/g, " ");  // drop parentheses content
+  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+  return t;
+    /** End of Function*/
+}
+
+
