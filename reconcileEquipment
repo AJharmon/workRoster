@@ -1,8 +1,8 @@
 function reconcileEquipment_WorkRoster() {
   const ss = SpreadsheetApp.getActive();
-  const SHEET = "equipment"; // tab name must match exactly
-  const A_COL = 1; // Column A: Names
-  const B_COL = 2; // Column B: workRoster
+  const SHEET = "equipment";   // <-- tab name must match exactly
+  const A_COL = 1;             // Column A: Names (from studentDatabase)
+  const B_COL = 2;             // Column B: workRoster
 
   const sh = ss.getSheetByName(SHEET);
   if (!sh) throw new Error('Missing sheet: "equipment"');
@@ -10,67 +10,145 @@ function reconcileEquipment_WorkRoster() {
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return; // no data rows
 
+  // --- Read Names (A) and workRoster (B) ---
   const aVals = sh.getRange(2, A_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
-  const bVals = sh.getRange(2, B_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+  const bValsRaw = sh.getRange(2, B_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
 
-  // how many non-empty names in A (defines end of the A-list)
+  // Count non-empty names in A (defines end of A list)
   const aNonEmptyRows = aVals.reduce((c, v) => c + (v ? 1 : 0), 0);
   const aEndRow = 1 + aNonEmptyRows; // header is row 1
 
-  // index: normalized A-name -> first row number
+  // 1) Flip comma-style names in B to "First [Middle] Last" for DISPLAY
+  const bValsFlipped = bValsRaw.map(flipCommaDisplay);
+
+  // 2) Dedupe B (after flipping) based on normalized match key
+  const seen = new Set();
+  const bUnique = [];
+  for (const display of bValsFlipped) {
+    if (!display) continue;
+    const key = normalizeForMatch(display);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    bUnique.push({ key, display });
+  }
+
+  // 3) Build index for A: normalized match key -> row number (2-based)
   const aIndex = new Map();
   for (let i = 0; i < aVals.length; i++) {
-    const name = aVals[i];
-    if (!name) continue;
-    const norm = normalizeName(name);
-    if (norm && !aIndex.has(norm)) aIndex.set(norm, 2 + i);
+    const nameA = aVals[i];
+    if (!nameA) continue;
+    const key = normalizeForMatch(nameA);
+    if (key && !aIndex.has(key)) aIndex.set(key, 2 + i);
   }
 
-  // dedupe B by normalized name, preserving first-seen text & order
-  const seenB = new Set();
-  const uniqueB = [];
-  for (const b of bVals) {
-    if (!b) continue;
-    const norm = normalizeName(b);
-    if (!norm || seenB.has(norm)) continue;
-    seenB.add(norm);
-    uniqueB.push({ norm, display: b });
-  }
-
-  // prepare B output aligned with A rows (2..aEndRow)
+  // 4) Prepare output array for B aligned with A rows (2..aEndRow)
   const bOut = Array.from({ length: aNonEmptyRows }, () => [""]);
   const usedARows = new Set();
   const unmatchedB = [];
 
-  // place matching B entries next to their A rows; collect B-only leftovers
-  for (const entry of uniqueB) {
-    const aRow = aIndex.get(entry.norm);
+  // 5) Place matches next to A; collect B-only leftovers
+  for (const { key, display } of bUnique) {
+    const aRow = aIndex.get(key);
     if (aRow && !usedARows.has(aRow) && aRow >= 2 && aRow <= aEndRow) {
-      bOut[aRow - 2][0] = entry.display;
+      bOut[aRow - 2][0] = display;
       usedARows.add(aRow);
     } else {
-      unmatchedB.push(entry.display);
+      unmatchedB.push(display);
     }
   }
 
-  // write back to Column B (only B is touched)
-  if (lastRow > 1) sh.getRange(2, B_COL, lastRow - 1, 1).clearContent();
+  // --- Write back (only Column B is modified) ---
+  if (lastRow > 1) sh.getRange(2, B_COL, lastRow - 1, 1).clearContent(); // clear old B
   if (bOut.length > 0) sh.getRange(2, B_COL, bOut.length, 1).setValues(bOut);
 
   if (unmatchedB.length > 0) {
-    const startRow = aEndRow + 1;
+    const startRow = aEndRow + 1; // append below end of A-list
     sh.getRange(startRow, B_COL, unmatchedB.length, 1)
       .setValues(unmatchedB.map(n => [n]));
   }
 }
 
-// Helpers (reuse if already present in your script)
+/* ----------------- Helpers (omit if already defined elsewhere) ----------------- */
+
 function asText(v) {
   return (v == null ? "" : String(v)).trim();
 }
-function normalizeName(s) {
+
+/**
+ * Flip "Last, First [Middle ...] [, Suffix]" to "First [Middle ...] Last" for DISPLAY.
+ * Examples:
+ *  - "Bubba, Mac"           -> "Mac Bubba"
+ *  - "Jones, Thomas A."     -> "Thomas A. Jones"
+ * If no comma, returns original string.
+ */
+function flipCommaDisplay(s) {
   if (!s) return "";
-  let t = s.replace(/\([^)]*\)/g, " ");
-  t = t.replace(/\s+/g, " ").trim().toLowerCase();
-  return t;
+  let t = s.trim();
+  if (!t.includes(",")) return t;
+
+  const parts = t.split(",").map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return t;
+
+  const lastSide = parts[0];                 // e.g., "Jones"
+  const rightAll = parts.slice(1).join(" "); // e.g., "Thomas A. Jr."
+  let rightTokens = rightAll.split(/\s+/).filter(Boolean);
+
+  // Drop common suffixes for display ordering
+  rightTokens = stripSuffixTokens_(rightTokens);
+
+  const lastTokens = lastSide.split(/\s+/).filter(Boolean);
+  const last = lastTokens.length ? lastTokens[lastTokens.length - 1] : "";
+
+  const firstMiddle = rightTokens.join(" ").trim();
+  const display = (firstMiddle ? firstMiddle + " " : "") + last;
+  return display.trim();
+}
+
+/**
+ * Build a normalized match key so that:
+ *  - "Jones, Thomas"    <-> "Thomas Jones"
+ *  - "Jones, Thomas A." <-> "Thomas A. Jones"
+ *  - "(Tom)" nicknames, case, periods, extra spaces ignored
+ * We reduce to "first last" (first token + last token).
+ */
+function normalizeForMatch(s) {
+  if (!s) return "";
+  // Remove accents and parentheses, collapse spaces
+  let t = String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  t = t.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\./g, " ");
+  t = t.replace(/\s+/g, " ").trim();
+  if (!t) return "";
+
+  if (t.includes(",")) {
+    // "Last, First Middle [, Suffix]"
+    const parts = t.split(",").map(p => p.trim()).filter(Boolean);
+    const lastSide = parts[0] || "";
+    const right = parts.slice(1).join(" ");
+    let rightTokens = right.split(/\s+/).filter(Boolean);
+    rightTokens = stripSuffixTokens_(rightTokens);
+    const first = rightTokens[0] || "";
+    const lastTokens = lastSide.split(/\s+/).filter(Boolean);
+    const last = lastTokens.length ? lastTokens[lastTokens.length - 1] : "";
+    return `${first} ${last}`.replace(/\s+/g, " ").trim().toLowerCase();
+  } else {
+    // "First [Middle ...] Last"
+    let tokens = t.split(/\s+/).filter(Boolean);
+    tokens = stripSuffixTokens_(tokens);
+    if (tokens.length === 1) return tokens[0].toLowerCase();
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    return `${first} ${last}`.toLowerCase();
+  }
+}
+
+/** Remove common suffix tokens (jr, sr, ii, iii, iv, v) from the end (dots already stripped). */
+function stripSuffixTokens_(arr) {
+  const suffixes = new Set(["jr","sr","ii","iii","iv","v"]);
+  const out = arr.slice();
+  while (out.length > 0) {
+    const tail = out[out.length - 1].toLowerCase();
+    if (suffixes.has(tail)) out.pop(); else break;
+  }
+  return out;
 }
