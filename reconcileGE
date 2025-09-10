@@ -1,0 +1,103 @@
+function reconcileGE_WorkRoster() {
+  const ss = SpreadsheetApp.getActive();
+  const SHEET = "G&E";
+  const A_COL = 1; // Column A: Names (from studentDatabase)
+  const B_COL = 2; // Column B: workRoster
+
+  const sh = ss.getSheetByName(SHEET);
+  if (!sh) throw new Error('Missing sheet: "G&E"');
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return; // no data rows
+
+  // --- Read Names (A) and workRoster (B) ---
+  const aVals = sh.getRange(2, A_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+  const bVals = sh.getRange(2, B_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+
+  // Determine how many non-empty names we have in Column A (end of A-list)
+  const aNonEmptyRows = aVals.reduce((count, v) => count + (v ? 1 : 0), 0);
+  const aEndRow = 1 + aNonEmptyRows; // last data row index for Column A (header is row 1)
+
+  // Build index: normalized name in A -> first row index (2-based)
+  const aIndex = new Map(); // norm -> rowNumber
+  for (let i = 0; i < aVals.length; i++) {
+    const name = aVals[i];
+    if (!name) continue;
+    const norm = normalizeName(name);
+    if (norm && !aIndex.has(norm)) {
+      aIndex.set(norm, 2 + i); // row number in sheet
+    }
+  }
+
+  // Deduplicate Column B while preserving first-seen display and order
+  const seenB = new Set();
+  const uniqueB = [];
+  for (const b of bVals) {
+    if (!b) continue;
+    const norm = normalizeName(b);
+    if (!norm || seenB.has(norm)) continue;
+    seenB.add(norm);
+    uniqueB.push({ norm, display: b });
+  }
+
+  // Prepare Column B output for rows 2..aEndRow (aligned with Column A names)
+  const bOut = Array.from({ length: aNonEmptyRows }, () => [""]); // default blanks
+
+  // Track which A rows have received a match
+  const usedARows = new Set();
+
+  // Place matches from B next to matching A names (same row)
+  const unmatchedB = [];
+  for (const entry of uniqueB) {
+    const aRow = aIndex.get(entry.norm);
+    if (aRow && !usedARows.has(aRow)) {
+      // Only place if within the A-list region
+      if (aRow >= 2 && aRow <= aEndRow) {
+        bOut[aRow - 2][0] = entry.display; // row2 maps to index 0
+        usedARows.add(aRow);
+        continue;
+      }
+    }
+    // Not matched to a row in A -> keep for appending under the A list
+    unmatchedB.push(entry.display);
+  }
+
+  // --- Write results to Column B safely ---
+  // 1) Clear old Column B content
+  if (lastRow > 1) {
+    sh.getRange(2, B_COL, lastRow - 1, 1).clearContent();
+  }
+
+  // 2) Write aligned matches for rows 2..aEndRow
+  if (bOut.length > 0) {
+    sh.getRange(2, B_COL, bOut.length, 1).setValues(bOut);
+  }
+
+  // 3) Append unmatched B-only names under the end of the A list in Column B
+  //    (i.e., starting at row aEndRow + 1)
+  if (unmatchedB.length > 0) {
+    const startRow = aEndRow + 1;
+    const rows = unmatchedB.map(n => [n]);
+    sh.getRange(startRow, B_COL, rows.length, 1).setValues(rows);
+  }
+}
+
+/* ----------------- Helpers ----------------- */
+
+function asText(v) {
+  return (v == null ? "" : String(v)).trim();
+}
+
+/**
+ * Normalizes a name for matching & deduping:
+ *  - remove parentheticals: "Jane Doe (JD)" -> "Jane Doe"
+ *  - collapse multiple spaces
+ *  - lowercase
+ */
+function normalizeName(s) {
+  if (!s) return "";
+  let t = s.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+  return t;
+   /** End of Function*/
+}
