@@ -1,0 +1,69 @@
+function reconcileCamera_WorkRoster() {
+  const ss = SpreadsheetApp.getActive();
+  const SHEET = "camera"; // <-- match your sheet name exactly
+  const A_COL = 1; // Column A: Names
+  const B_COL = 2; // Column B: workRoster
+
+  const sh = ss.getSheetByName(SHEET);
+  if (!sh) throw new Error('Missing sheet: "camera"');
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return;
+
+  const aVals = sh.getRange(2, A_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+  const bVals = sh.getRange(2, B_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+
+  const aNonEmptyRows = aVals.reduce((c, v) => c + (v ? 1 : 0), 0);
+  const aEndRow = 1 + aNonEmptyRows;
+
+  const aIndex = new Map(); // norm -> row#
+  for (let i = 0; i < aVals.length; i++) {
+    const n = aVals[i];
+    if (!n) continue;
+    const norm = normalizeName(n);
+    if (norm && !aIndex.has(norm)) aIndex.set(norm, 2 + i);
+  }
+
+  const seenB = new Set();
+  const uniqueB = [];
+  for (const b of bVals) {
+    if (!b) continue;
+    const norm = normalizeName(b);
+    if (!norm || seenB.has(norm)) continue;
+    seenB.add(norm);
+    uniqueB.push({ norm, display: b });
+  }
+
+  const bOut = Array.from({ length: aNonEmptyRows }, () => [""]);
+  const usedARows = new Set();
+  const unmatchedB = [];
+
+  for (const entry of uniqueB) {
+    const aRow = aIndex.get(entry.norm);
+    if (aRow && !usedARows.has(aRow) && aRow >= 2 && aRow <= aEndRow) {
+      bOut[aRow - 2][0] = entry.display; // align with A row
+      usedARows.add(aRow);
+    } else {
+      unmatchedB.push(entry.display);
+    }
+  }
+
+  if (lastRow > 1) sh.getRange(2, B_COL, lastRow - 1, 1).clearContent();
+  if (bOut.length > 0) sh.getRange(2, B_COL, bOut.length, 1).setValues(bOut);
+  if (unmatchedB.length > 0) {
+    const startRow = aEndRow + 1;
+    sh.getRange(startRow, B_COL, unmatchedB.length, 1)
+      .setValues(unmatchedB.map(n => [n]));
+  }
+}
+
+// Helpers
+function asText(v) {
+  return (v == null ? "" : String(v)).trim();
+}
+function normalizeName(s) {
+  if (!s) return "";
+  let t = s.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+  return t;
+}
