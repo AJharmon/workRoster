@@ -1,0 +1,145 @@
+function distributeStudentsToDepartmentTabs() {
+  const ss = SpreadsheetApp.getActive();
+
+  const SRC_SHEET = "studentDatabase";
+  const NAME_COL = 1; // A
+  const DEPT_COL = 3; // C
+
+  // Only these department tabs are targeted (case-insensitive match)
+  const TARGET_DEPTS = ["G&E", "camera", "equipment", "stage"];
+
+  const src = ss.getSheetByName(SRC_SHEET);
+  if (!src) throw new Error('Missing sheet: "studentDatabase"');
+
+  const lastRow = src.getLastRow();
+  if (lastRow < 2) return; // no data rows
+
+  // Read names (A) and departments (C) from studentDatabase
+  const names = src.getRange(2, NAME_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+  const depts = src.getRange(2, DEPT_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+
+  // Group names by target department
+  const grouped = new Map(); // deptName -> array of names to consider
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const deptRaw = depts[i];
+    if (!name || !deptRaw) continue;
+
+    const dept = resolveTargetDept(deptRaw, TARGET_DEPTS);
+    if (!dept) continue; // skip departments outside the target list
+
+    if (!grouped.has(dept)) grouped.set(dept, []);
+    grouped.get(dept).push(name);
+  }
+
+  // Ensure each target sheet exists (don’t modify if it already exists)
+  for (const dep of TARGET_DEPTS) {
+    if (!ss.getSheetByName(dep)) {
+      const sh = ss.insertSheet(dep);
+      // If this is your preferred header layout, keep it; otherwise, adjust/remove:
+      const headers = [["Name", "ID", "Job Title"]];
+      sh.getRange(1, 1, 1, headers[0].length).setValues(headers);
+      sh.getRange(1, 1, 1, headers[0].length).setFontWeight("bold");
+      sh.setFrozenRows(1);
+    }
+  }
+
+  // For each department: append missing names, then sort by last name
+  for (const dep of TARGET_DEPTS) {
+    const sh = ss.getSheetByName(dep);
+    if (!sh) continue;
+
+    // Existing data width (keep all columns intact when we sort)
+    const width = Math.max(3, sh.getLastColumn()); // at least Name/ID/Job Title
+    const shLast = sh.getLastRow();
+    const existingRows = shLast > 1
+      ? sh.getRange(2, 1, shLast - 1, width).getValues()
+      : [];
+
+    // Build a Set of existing names (normalized) to prevent duplicates
+    const existingNameSet = new Set(
+      existingRows
+        .map(r => normalizeName(asText(r[0])))
+        .filter(n => n.length > 0)
+    );
+
+    // Names we want to add for this dept
+    const incoming = grouped.get(dep) || [];
+    const additions = [];
+    for (const nm of incoming) {
+      const norm = normalizeName(nm);
+      if (!norm) continue;
+      if (!existingNameSet.has(norm)) {
+        // Create a new row with Name in col A; other columns left blank
+        const row = new Array(width).fill("");
+        row[0] = nm;
+        additions.push(row);
+        existingNameSet.add(norm);
+      }
+    }
+
+    // Append additions (do NOT clear anything)
+    if (additions.length > 0) {
+      const startRow = shLast >= 2 ? shLast + 1 : 2;
+      sh.getRange(startRow, 1, additions.length, width).setValues(additions);
+    }
+
+    // Re-read all data rows and sort by LAST NAME (keeps entire row together)
+    const newLast = sh.getLastRow();
+    if (newLast > 1) {
+      const allRows = sh.getRange(2, 1, newLast - 1, width).getValues();
+
+      allRows.sort((ra, rb) => {
+        const a = extractLastName(asText(ra[0])).toLowerCase();
+        const b = extractLastName(asText(rb[0])).toLowerCase();
+        if (a === b) {
+          // tie-breaker by full name
+          return asText(ra[0]).toLowerCase().localeCompare(asText(rb[0]).toLowerCase());
+        }
+        return a.localeCompare(b);
+      });
+
+      // Write back in sorted order (no clearing, just reordering)
+      sh.getRange(2, 1, allRows.length, width).setValues(allRows);
+    }
+  }
+}
+
+// ---------- Helpers ----------
+
+function asText(v) {
+  return (v == null ? "" : String(v)).trim();
+}
+
+/**
+ * Normalize a name for duplicate checking:
+ *  - remove parentheticals: "Jane Doe (JD)" -> "Jane Doe"
+ *  - collapse spaces
+ *  - lowercase
+ */
+function normalizeName(s) {
+  if (!s) return "";
+  let t = s.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+  return t;
+}
+
+/** Get last name from a full "First ... Last" string, ignoring parentheticals */
+function extractLastName(fullName) {
+  if (!fullName) return "";
+  let clean = fullName.replace(/\([^)]*\)/g, " ").trim();
+  const parts = clean.split(/\s+/);
+  return parts.length > 1 ? parts[parts.length - 1] : parts[0];
+}
+
+/**
+ * Map any case/spacing variation of the department to a canonical sheet name
+ * from the allowed list. Returns null if not in target list.
+ */
+function resolveTargetDept(raw, allowed) {
+  const normalized = asText(raw).toLowerCase();
+  for (const a of allowed) {
+    if (normalized === a.toLowerCase()) return a; // exact case-insensitive match
+  }
+  return null; // skip if not one of the target departments
+}
