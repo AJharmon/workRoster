@@ -1,0 +1,76 @@
+function reconcileEquipment_WorkRoster() {
+  const ss = SpreadsheetApp.getActive();
+  const SHEET = "equipment"; // tab name must match exactly
+  const A_COL = 1; // Column A: Names
+  const B_COL = 2; // Column B: workRoster
+
+  const sh = ss.getSheetByName(SHEET);
+  if (!sh) throw new Error('Missing sheet: "equipment"');
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return; // no data rows
+
+  const aVals = sh.getRange(2, A_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+  const bVals = sh.getRange(2, B_COL, lastRow - 1, 1).getValues().map(r => asText(r[0]));
+
+  // how many non-empty names in A (defines end of the A-list)
+  const aNonEmptyRows = aVals.reduce((c, v) => c + (v ? 1 : 0), 0);
+  const aEndRow = 1 + aNonEmptyRows; // header is row 1
+
+  // index: normalized A-name -> first row number
+  const aIndex = new Map();
+  for (let i = 0; i < aVals.length; i++) {
+    const name = aVals[i];
+    if (!name) continue;
+    const norm = normalizeName(name);
+    if (norm && !aIndex.has(norm)) aIndex.set(norm, 2 + i);
+  }
+
+  // dedupe B by normalized name, preserving first-seen text & order
+  const seenB = new Set();
+  const uniqueB = [];
+  for (const b of bVals) {
+    if (!b) continue;
+    const norm = normalizeName(b);
+    if (!norm || seenB.has(norm)) continue;
+    seenB.add(norm);
+    uniqueB.push({ norm, display: b });
+  }
+
+  // prepare B output aligned with A rows (2..aEndRow)
+  const bOut = Array.from({ length: aNonEmptyRows }, () => [""]);
+  const usedARows = new Set();
+  const unmatchedB = [];
+
+  // place matching B entries next to their A rows; collect B-only leftovers
+  for (const entry of uniqueB) {
+    const aRow = aIndex.get(entry.norm);
+    if (aRow && !usedARows.has(aRow) && aRow >= 2 && aRow <= aEndRow) {
+      bOut[aRow - 2][0] = entry.display;
+      usedARows.add(aRow);
+    } else {
+      unmatchedB.push(entry.display);
+    }
+  }
+
+  // write back to Column B (only B is touched)
+  if (lastRow > 1) sh.getRange(2, B_COL, lastRow - 1, 1).clearContent();
+  if (bOut.length > 0) sh.getRange(2, B_COL, bOut.length, 1).setValues(bOut);
+
+  if (unmatchedB.length > 0) {
+    const startRow = aEndRow + 1;
+    sh.getRange(startRow, B_COL, unmatchedB.length, 1)
+      .setValues(unmatchedB.map(n => [n]));
+  }
+}
+
+// Helpers (reuse if already present in your script)
+function asText(v) {
+  return (v == null ? "" : String(v)).trim();
+}
+function normalizeName(s) {
+  if (!s) return "";
+  let t = s.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+  return t;
+}
